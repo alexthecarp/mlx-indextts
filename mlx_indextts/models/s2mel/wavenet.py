@@ -266,11 +266,16 @@ def _pad1d(x: mx.array, pad_left: int, pad_right: int, mode: str = 'reflect') ->
     if pad_left == 0 and pad_right == 0:
         return x
 
-    # Use numpy for reflect padding (MLX doesn't support it directly)
+    # Reflect padding: mirror the rows next to each edge, without repeating the edge
     if mode == 'reflect':
-        x_np = np.array(x)
-        x_padded = np.pad(x_np, ((0, 0), (pad_left, pad_right), (0, 0)), mode='reflect')
-        return mx.array(x_padded)
+        length = x.shape[1]
+        parts = []
+        if pad_left > 0:
+            parts.append(mx.take(x, mx.arange(pad_left, 0, -1), axis=1))
+        parts.append(x)
+        if pad_right > 0:
+            parts.append(mx.take(x, mx.arange(length - 2, length - 2 - pad_right, -1), axis=1))
+        return mx.concatenate(parts, axis=1)
     else:
         # Zero padding
         batch, length, channels = x.shape
