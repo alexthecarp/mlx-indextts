@@ -10,6 +10,7 @@ from typing import List, Optional, Tuple
 
 import mlx.core as mx
 import mlx.nn as nn
+import numpy as np
 
 from mlx_indextts.config import IndexTTSConfig, ConformerConfig
 from mlx_indextts.models.gpt2 import GPT2Model
@@ -388,25 +389,15 @@ class UnifiedVoiceV2(nn.Module):
         if penalty == 1.0 or not generated_tokens:
             return logits
 
-        # Get unique tokens
-        unique_tokens = list(set(generated_tokens))
+        # Mark the tokens generated so far
+        vocab_size = logits.shape[-1]
+        seen = np.zeros(vocab_size, dtype=bool)
+        seen[[t for t in set(generated_tokens) if 0 <= t < vocab_size]] = True
 
-        # Create penalty mask
-        for token_id in unique_tokens:
-            if 0 <= token_id < logits.shape[-1]:
-                token_logit = logits[:, token_id]
-                # Apply penalty: positive logits get divided, negative get multiplied
-                new_logit = mx.where(
-                    token_logit > 0,
-                    token_logit / penalty,
-                    token_logit * penalty
-                )
-                # Update the logits array
-                one_hot = mx.zeros((1, logits.shape[-1]))
-                one_hot = one_hot.at[:, token_id].add(1.0)
-                logits = logits * (1 - one_hot) + new_logit * one_hot
+        # Apply penalty: positive logits get divided, negative get multiplied
+        penalized = mx.where(logits > 0, logits / penalty, logits * penalty)
 
-        return logits
+        return mx.where(mx.array(seen), penalized, logits)
 
     def _sample(
         self,
@@ -461,18 +452,13 @@ class UnifiedVoiceV2(nn.Module):
                 sorted_indices_to_remove[:, :-1]
             ], axis=-1)
 
-            import numpy as np
-            batch_size, vocab_size = logits.shape
-            indices_to_remove_np = np.zeros((batch_size, vocab_size), dtype=bool)
-            sorted_indices_np = np.array(sorted_indices)
-            sorted_remove_np = np.array(sorted_indices_to_remove)
-
-            for b in range(batch_size):
-                for i in range(vocab_size):
-                    if sorted_remove_np[b, i]:
-                        indices_to_remove_np[b, sorted_indices_np[b, i]] = True
-
-            indices_to_remove = mx.array(indices_to_remove_np)
+            # Put the mask back in vocabulary order
+            indices_to_remove = mx.put_along_axis(
+                mx.zeros(logits.shape, dtype=mx.bool_),
+                sorted_indices,
+                sorted_indices_to_remove,
+                axis=-1,
+            )
             logits = mx.where(indices_to_remove, float("-inf"), logits)
 
         # Sample
